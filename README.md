@@ -1,37 +1,102 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Menu Analyzer
 
-## Getting Started
+AI-powered restaurant menu analyzer that extracts food items from menu images and provides personalized nutrition-based recommendations.
 
-First, run the development server:
+## Features
+
+- 📸 **OCR Menu Scanning** - Upload menu images for automatic text extraction
+- 🤖 **AI-Powered Analysis** - Uses Groq LLM for intelligent menu parsing and recommendations
+- 🎯 **Personalized Goals** - Recommendations based on weight loss, muscle gain, or health goals
+- 🔒 **Security** - Rate limiting, input validation, and security headers
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- Groq API key ([Get one here](https://console.groq.com/keys))
+
+### Installation
 
 ```bash
+# Install dependencies
+npm install
+
+# Copy environment template
+cp .env.example .env.local
+
+# Add your GROQ_API_KEY to .env.local
+
+# Start development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploy to Vercel
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/your-repo/menu-analyzer)
 
-## Learn More
+1. Click deploy button or import from GitHub
+2. Add `GROQ_API_KEY` in Vercel Environment Variables
+3. Deploy!
 
-To learn more about Next.js, take a look at the following resources:
+## Environment Variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable           | Required | Description                           |
+| ------------------ | -------- | ------------------------------------- |
+| `GROQ_API_KEY`     | ✅       | API key for Groq AI                   |
+| `RATE_LIMIT_MAX`   | ❌       | Max requests per 15min (default: 100) |
+| `MAX_FILE_SIZE_MB` | ❌       | Max upload size in MB (default: 5)    |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## API Reference
 
-## Deploy on Vercel
+### POST /api/analyze
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Analyze a menu image.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# Food-Recommendation-AI
+**Request:** `multipart/form-data`
+
+- `image` (required) - Menu image (JPEG, PNG, WebP, GIF, max 5MB)
+- `userGoal` - Goal: `weight loss`, `muscle gain`, `maintenance`, `healthy eating`
+- `timeOfDay` - `breakfast`, `lunch`, `dinner`, `snack`
+- `userFoodData` - JSON array of already consumed foods
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "items": [
+    {
+      "name": "Grilled Chicken Salad",
+      "price": 12.99,
+      "nutrition": {
+        "calories": 350,
+        "protein": 35,
+        "carbs": 15,
+        "fats": 12,
+        "fiber": 5
+      },
+      "category": "recommended",
+      "recommendation": "High protein, low carb - great for weight loss"
+    }
+  ],
+  "requestId": "uuid-for-tracing"
+}
+```
+
+### GET /api/health
+
+Health check endpoint.
+
+## Tech Stack
+
+- **Framework:** Next.js 16
+- **OCR:** Tesseract.js
+- **AI:** Groq (Llama 3.3 70B)
+- **Styling:** Tailwind CSS
+
+## License
+
+MIT

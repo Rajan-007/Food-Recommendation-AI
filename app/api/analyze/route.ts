@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createWorker } from 'tesseract.js';
 import Groq from 'groq-sdk';
 import validator from 'validator';
+import { randomUUID } from 'crypto';
 
 // ============================================
-// Security Configuration
+// Configuration
 // ============================================
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB || '5') * 1024 * 1024;
 
 // Magic bytes for image validation
 const MAGIC_BYTES: Record<string, number[]> = {
@@ -18,10 +19,52 @@ const MAGIC_BYTES: Record<string, number[]> = {
   'image/gif': [0x47, 0x49, 0x46, 0x38],
 };
 
-// Rate limiting (simple in-memory implementation)
+// Rate limiting (in-memory - resets on cold start, suitable for Vercel)
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15 minutes
-const RATE_LIMIT_MAX = 100;
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '100');
+
+// ============================================
+// Logging Helper
+// ============================================
+
+function log(requestId: string, level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>) {
+  const logEntry = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    requestId,
+    level,
+    message,
+    ...data,
+  });
+  if (level === 'error') {
+    console.error(logEntry);
+  } else if (level === 'warn') {
+    console.warn(logEntry);
+  } else {
+    console.log(logEntry);
+  }
+}
+
+// ============================================
+// Error Response Helper
+// ============================================
+
+function errorResponse(
+  requestId: string,
+  code: string,
+  message: string,
+  status: number,
+  details?: string
+) {
+  return NextResponse.json(
+    {
+      success: false,
+      error: { code, message, details },
+      requestId,
+    },
+    { status }
+  );
+}
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -190,15 +233,22 @@ Rules:
 // ============================================
 
 export async function POST(request: NextRequest) {
+  const requestId = randomUUID();
+  const startTime = Date.now();
+  
   try {
+    // Validate environment
+    if (!process.env.GROQ_API_KEY) {
+      log(requestId, 'error', 'GROQ_API_KEY not configured');
+      return errorResponse(requestId, 'CONFIG_ERROR', 'Service temporarily unavailable', 503);
+    }
+
     // Get client IP for rate limiting
-    const ip = request.headers.get('x-forwarded-for') || 'unknown';
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
     
     if (!checkRateLimit(ip)) {
-      return NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
-        { status: 429 }
-      );
+      log(requestId, 'warn', 'Rate limit exceeded', { ip });
+      return errorResponse(requestId, 'RATE_LIMITED', 'Too many requests. Please try again later.', 429);
     }
 
     // Parse multipart form data
@@ -206,26 +256,17 @@ export async function POST(request: NextRequest) {
     const file = formData.get('image') as File | null;
 
     if (!file) {
-      return NextResponse.json(
-        { error: "Image file is required. Use 'image' as the form field name." },
-        { status: 400 }
-      );
+      return errorResponse(requestId, 'MISSING_IMAGE', "Image file is required. Use 'image' as the form field name.", 400);
     }
 
     // Validate file type
     if (!ALLOWED_MIME_TYPES.includes(file.type)) {
-      return NextResponse.json(
-        { error: 'Invalid file type. Only JPEG, PNG, WebP, and GIF are allowed.' },
-        { status: 400 }
-      );
+      return errorResponse(requestId, 'INVALID_FILE_TYPE', 'Invalid file type. Only JPEG, PNG, WebP, and GIF are allowed.', 400);
     }
 
     // Validate file size
     if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: 'File too large. Maximum size is 5MB.' },
-        { status: 400 }
-      );
+      return errorResponse(requestId, 'FILE_TOO_LARGE', `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB.`, 400);
     }
 
     // Get file buffer and validate magic bytes
@@ -233,10 +274,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
 
     if (!validateMagicBytes(buffer, file.type)) {
-      return NextResponse.json(
-        { error: 'Invalid file content. File does not match declared type.' },
-        { status: 400 }
-      );
+      return errorResponse(requestId, 'INVALID_FILE_CONTENT', 'Invalid file content. File does not match declared type.', 400);
     }
 
     // Parse user preferences
@@ -253,7 +291,7 @@ export async function POST(request: NextRequest) {
     const userGoal = (formData.get('userGoal') as string) || 'weight loss';
     const timeOfDay = (formData.get('timeOfDay') as string) || 'lunch';
 
-    console.log(`Processing image: ${file.name} (${file.size} bytes)`);
+    log(requestId, 'info', 'Processing image', { fileName: file.name, fileSize: file.size, userGoal });
 
     // Extract text from image using Tesseract
     let rawText: string;
@@ -263,45 +301,39 @@ export async function POST(request: NextRequest) {
       rawText = result.data.text;
       await worker.terminate();
     } catch (ocrError) {
-      console.error('OCR error:', ocrError);
-      return NextResponse.json(
-        { error: 'Failed to process the image. Please try again.' },
-        { status: 500 }
-      );
+      log(requestId, 'error', 'OCR processing failed', { error: String(ocrError) });
+      return errorResponse(requestId, 'OCR_FAILED', 'Failed to process the image. Please try again.', 500);
     }
 
     if (!rawText || rawText.trim().length < 10) {
-      return NextResponse.json(
-        { error: 'Could not extract text from image. Please ensure the menu is clear and readable.' },
-        { status: 400 }
-      );
+      return errorResponse(requestId, 'NO_TEXT_FOUND', 'Could not extract text from image. Please ensure the menu is clear and readable.', 400);
     }
 
     // Process with AI
     const menuItems = await cleanAndParseWithAI(rawText, userGoal, timeOfDay, userFoodData);
+
+    const duration = Date.now() - startTime;
+    log(requestId, 'info', 'Request completed', { itemCount: menuItems.length, durationMs: duration });
 
     if (menuItems.length === 0) {
       return NextResponse.json({
         success: true,
         items: [],
         message: 'No menu items could be identified. Try a clearer image.',
+        requestId,
       });
     }
 
-    return NextResponse.json({ success: true, items: menuItems });
+    return NextResponse.json({ success: true, items: menuItems, requestId });
   } catch (error) {
-    console.error('Error analyzing menu:', error);
+    log(requestId, 'error', 'Unexpected error', { error: error instanceof Error ? error.message : 'Unknown' });
 
     const isProduction = process.env.NODE_ENV === 'production';
-    return NextResponse.json(
-      {
-        error: isProduction
-          ? 'An error occurred while processing your request.'
-          : error instanceof Error
-          ? error.message
-          : 'Unknown error',
-      },
-      { status: 500 }
+    return errorResponse(
+      requestId,
+      'INTERNAL_ERROR',
+      isProduction ? 'An error occurred while processing your request.' : (error instanceof Error ? error.message : 'Unknown error'),
+      500
     );
   }
 }
@@ -309,7 +341,8 @@ export async function POST(request: NextRequest) {
 // Handle unsupported methods
 export async function GET() {
   return NextResponse.json(
-    { error: 'Method not allowed. Use POST with multipart/form-data.' },
+    { success: false, error: { code: 'METHOD_NOT_ALLOWED', message: 'Use POST with multipart/form-data.' } },
     { status: 405 }
   );
 }
+
